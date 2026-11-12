@@ -182,6 +182,35 @@ fn build_error_response(err: crate::error::NcmError) -> Response {
     use crate::error::NcmError;
 
     let (status, body) = match &err {
+        NcmError::Response {
+            http_status,
+            code,
+            message,
+            body,
+            ..
+        } => {
+            let status = if !(200..300).contains(http_status) {
+                *http_status
+            } else {
+                u16::try_from(*code)
+                    .ok()
+                    .filter(|code| (400..600).contains(code))
+                    .unwrap_or(502)
+            };
+            let mut body = body.clone();
+            if !body.is_object() {
+                body = json!({});
+            }
+            body["code"] = (*code).into();
+            if body.get("message").is_none() && body.get("msg").is_none() {
+                body["message"] = message.clone().into();
+            }
+            (
+                axum::http::StatusCode::from_u16(status)
+                    .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                body,
+            )
+        }
         NcmError::AuthRequired(msg) => (
             axum::http::StatusCode::UNAUTHORIZED,
             json!({ "code": 301, "msg": msg }),
@@ -209,7 +238,15 @@ fn build_error_response(err: crate::error::NcmError) -> Response {
         ),
     };
 
-    (status, Json(body)).into_response()
+    let mut response = (status, Json(body)).into_response();
+    if let NcmError::Response { cookie, .. } = &err {
+        for value in cookie {
+            if let Ok(value) = header::HeaderValue::from_str(value) {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+        }
+    }
+    response
 }
 
 // ============================================================

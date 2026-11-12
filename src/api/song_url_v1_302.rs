@@ -16,24 +16,19 @@ impl ApiClient {
         let level = query.get_or("level", "standard");
 
         // 第一次请求: download url
-        let data = json!({
-            "id": &id,
-            "immerseType": "c51",
-            "level": &level,
-        });
-        let response = self
-            .request(
-                "/api/song/enhance/download/url/v1",
-                data,
-                query.to_option(CryptoType::default()),
-            )
-            .await?;
+        let response = self.song_download_url_v1(query).await?;
 
         // 检查第一次请求是否有 url
         let url = response
             .body
             .get("data")
-            .and_then(|d| d.get(0))
+            .and_then(|data| {
+                if data.is_object() {
+                    Some(data)
+                } else {
+                    data.get(0)
+                }
+            })
             .and_then(|item| item.get("url"))
             .and_then(|u| u.as_str())
             .map(|s| s.to_string());
@@ -54,6 +49,9 @@ impl ApiClient {
         });
         if level == "sky" {
             fallback_data["immerseType"] = json!("c51");
+        }
+        if level == "vivid" {
+            fallback_data["encodeType"] = json!("mp3");
         }
         let fallback = self
             .request(

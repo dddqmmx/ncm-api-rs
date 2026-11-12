@@ -3,6 +3,16 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum NcmError {
+    /// Preserve server evidence instead of folding non-HTTP business codes to 400.
+    #[error("API response rejected at {endpoint} (HTTP {http_status}, code={code}): {message}")]
+    Response {
+        endpoint: String,
+        http_status: u16,
+        code: i64,
+        message: String,
+        body: serde_json::Value,
+        cookie: Vec<String>,
+    },
     /// HTTP 请求失败（网络错误、DNS 解析失败等）
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),

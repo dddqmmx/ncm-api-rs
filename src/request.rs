@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
+mod xeapi;
+use xeapi::XeapiContexts;
 
 /// 特殊状态码集合（视为 200）
 static SPECIAL_STATUS_CODES: LazyLock<std::collections::HashSet<i64>> =
@@ -41,6 +43,7 @@ fn header_value(s: &str) -> HeaderValue {
 /// 加密类型
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum CryptoType {
+    Xeapi,
     Weapi,
     #[default]
     Eapi,
@@ -51,6 +54,7 @@ pub enum CryptoType {
 impl CryptoType {
     pub fn as_str(&self) -> &str {
         match self {
+            CryptoType::Xeapi => "xeapi",
             CryptoType::Weapi => "weapi",
             CryptoType::Eapi => "eapi",
             CryptoType::Linuxapi => "linuxapi",
@@ -62,6 +66,7 @@ impl CryptoType {
 impl From<&str> for CryptoType {
     fn from(s: &str) -> Self {
         match s {
+            "xeapi" => CryptoType::Xeapi,
             "weapi" => CryptoType::Weapi,
             "linuxapi" => CryptoType::Linuxapi,
             "api" => CryptoType::Api,
@@ -82,6 +87,7 @@ pub struct RequestOption {
     pub e_r: Option<bool>,
     pub domain: Option<String>,
     pub check_token: bool,
+    pub check_token_version: Option<String>,
 }
 
 /// API 响应
@@ -101,6 +107,7 @@ pub struct ApiClient {
     anonymous_token: Option<String>,
     /// 自定义设备 ID，None 则使用全局默认值
     device_id: Option<String>,
+    xeapi_contexts: XeapiContexts,
 }
 
 impl ApiClient {
@@ -115,6 +122,7 @@ impl ApiClient {
             cookie,
             anonymous_token: None,
             device_id: None,
+            xeapi_contexts: Default::default(),
         }
     }
 
@@ -132,6 +140,7 @@ impl ApiClient {
             cookie,
             anonymous_token: None,
             device_id: None,
+            xeapi_contexts: Default::default(),
         })
     }
 
@@ -153,7 +162,7 @@ impl ApiClient {
     }
 
     /// 获取当前设备 ID（自定义优先，否则使用全局默认）
-    fn get_device_id(&self) -> &str {
+    pub(crate) fn get_device_id(&self) -> &str {
         self.device_id.as_deref().unwrap_or(&DEVICE_ID)
     }
 
@@ -165,6 +174,10 @@ impl ApiClient {
         options: RequestOption,
     ) -> Result<ApiResponse> {
         let mut headers = HeaderMap::new();
+        if options.check_token_version.as_deref() == Some("v3") {
+            let token = self.fetch_checktoken_v3(options.domain.as_deref()).await?;
+            headers.insert("X-antiCheatToken", header_value(&token));
+        }
 
         // IP 伪装
         let ip = options.real_ip.clone().or_else(|| {
@@ -254,6 +267,11 @@ impl ApiClient {
             options.crypto.clone()
         };
 
+        if crypto_type == CryptoType::Xeapi {
+            return self
+                .request_xeapi(uri, data, options, cookie_map, headers)
+                .await;
+        }
         let mut data = data;
         let url: String;
         let encrypt_data: HashMap<String, String>;
@@ -262,6 +280,7 @@ impl ApiClient {
         let csrf_token = cookie_map.get("__csrf").cloned().unwrap_or_default();
 
         match crypto_type {
+            CryptoType::Xeapi => unreachable!("XEAPI is dispatched above"),
             CryptoType::Weapi => {
                 let ref_domain = if domain.is_empty() { DOMAIN } else { domain };
                 headers.insert(REFERER, header_value(ref_domain));
@@ -375,7 +394,11 @@ impl ApiClient {
                 headers.insert(USER_AGENT, header_value(ua));
 
                 let api_domain = if domain.is_empty() {
-                    API_DOMAIN
+                    if crypto_type == CryptoType::Eapi {
+                        EAPI_DOMAIN
+                    } else {
+                        API_DOMAIN
+                    }
                 } else {
                     domain
                 };
@@ -445,65 +468,89 @@ impl ApiClient {
                 .await?
         };
 
-        // 处理响应 cookie
-        let resp_cookies: Vec<String> = response
-            .headers()
-            .get_all("set-cookie")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .map(|s| {
-                // 移除 Domain 属性
-                DOMAIN_REGEX.replace_all(s, "").to_string()
-            })
-            .collect();
-
-        // 解析响应体
-        let e_r = options.e_r.unwrap_or(false);
-        let status_code = response.status().as_u16() as i64;
-
+        let resp_cookies = response_cookies(&response);
+        let http_status = response.status().as_u16();
+        let e_r = options.e_r.unwrap_or(ENCRYPT_RESPONSE);
+        let bytes = response.bytes().await?;
         let body: Value = if crypto_type == CryptoType::Eapi && e_r {
-            let bytes = response.bytes().await?;
-            let hex_str = hex::encode_upper(&bytes);
-            crypto::eapi_res_decrypt(&hex_str).unwrap_or(Value::Null)
+            crypto::xeapi_res_decrypt(&bytes).map_err(NcmError::Crypto)?
         } else {
-            let text = response.text().await?;
-            serde_json::from_str(&text).unwrap_or(Value::String(text))
+            match serde_json::from_slice(&bytes) {
+                Ok(body) => body,
+                Err(_) if !(200..300).contains(&http_status) => {
+                    return Err(response_error(
+                        uri,
+                        http_status,
+                        i64::from(http_status),
+                        Value::Null,
+                        resp_cookies,
+                    ));
+                }
+                Err(error) => return Err(NcmError::Json(error)),
+            }
         };
-
-        let mut status = body
-            .get("code")
-            .and_then(|c| {
-                c.as_i64()
-                    .or_else(|| c.as_str().and_then(|s| s.parse().ok()))
-            })
-            .unwrap_or(status_code);
-
-        // 特殊状态码视为 200
-        if SPECIAL_STATUS_CODES.contains(&status) {
-            status = 200;
-        }
-
-        // 状态码范围检查
-        if !(100..600).contains(&status) {
-            status = 400;
-        }
-
-        let answer = ApiResponse {
-            status,
-            body,
-            cookie: resp_cookies,
-        };
-
-        if status == 200 {
-            Ok(answer)
-        } else {
-            let msg = answer
-                .body
-                .get("msg")
-                .and_then(|m| m.as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
-            Err(NcmError::from_api(status, msg))
-        }
+        finish_response(uri, http_status, body, resp_cookies)
     }
+}
+
+fn business_code(body: &Value) -> Option<i64> {
+    body["code"]
+        .as_i64()
+        .or_else(|| body["code"].as_str().and_then(|code| code.parse().ok()))
+}
+
+fn response_cookies(response: &reqwest::Response) -> Vec<String> {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|cookie| DOMAIN_REGEX.replace_all(cookie, "").to_string())
+        .collect()
+}
+
+fn response_error(
+    endpoint: &str,
+    http_status: u16,
+    code: i64,
+    body: Value,
+    cookie: Vec<String>,
+) -> NcmError {
+    let message = [body["message"].as_str(), body["msg"].as_str()]
+        .into_iter()
+        .flatten()
+        .find(|message| {
+            !message.trim().is_empty() && !message.eq_ignore_ascii_case("Unknown error")
+        })
+        .unwrap_or("Service rejected request without an error message")
+        .to_owned();
+    NcmError::Response {
+        endpoint: endpoint.into(),
+        http_status,
+        code,
+        message,
+        body,
+        cookie,
+    }
+}
+
+fn finish_response(
+    endpoint: &str,
+    http_status: u16,
+    mut body: Value,
+    cookie: Vec<String>,
+) -> Result<ApiResponse> {
+    let code = business_code(&body).unwrap_or(i64::from(http_status));
+    if !(200..300).contains(&http_status) || (code != 200 && !SPECIAL_STATUS_CODES.contains(&code))
+    {
+        return Err(response_error(endpoint, http_status, code, body, cookie));
+    }
+    if body.is_object() && body.get("code").is_some() {
+        body["code"] = code.into();
+    }
+    Ok(ApiResponse {
+        status: 200,
+        body,
+        cookie,
+    })
 }

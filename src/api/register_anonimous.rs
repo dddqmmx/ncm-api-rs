@@ -33,13 +33,17 @@ impl ApiClient {
         let data = json!({
             "username": encoded_id
         });
-        let result = self
-            .request(
-                "/api/register/anonimous",
-                data,
-                query.to_option(CryptoType::Weapi),
-            )
+        let mut options = query.to_option(CryptoType::Xeapi);
+        let mut cookie =
+            crate::util::cookie::cookie_to_json(options.cookie.as_deref().unwrap_or(""));
+        cookie.insert("deviceId".into(), device_id);
+        options.cookie = Some(crate::util::cookie::cookie_obj_to_string(&cookie));
+        let mut result = self
+            .request("/api/register/anonimous", data, options)
             .await?;
+        if result.body["code"] == 200 {
+            result.body["cookie"] = result.cookie.join(";").into();
+        }
         Ok(result)
     }
 }

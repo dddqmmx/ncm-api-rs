@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Netease Cloud Music API Rust SDK"
 license = "WTFPL"
-repository = "https://github.com/SPlayer-Dev/ncm-api-rs"
-homepage = "https://github.com/SPlayer-Dev/ncm-api-rs"
+repository = "https://github.com/dddqmmx/ncm-api-rs"
+homepage = "https://github.com/dddqmmx/ncm-api-rs"
 
 [features]
 default = []
@@ -29,6 +29,12 @@ rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
+aes-gcm = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hmac = "0.12"
+sha2 = "0.10"
+flate2 = "1"
+url = "2"
 # Utils
 thiserror = "2"
 urlencoding = "2"

@@ -126,8 +126,8 @@ mod comment_like;
 mod comment_music;
 mod comment_mv;
 mod comment_new;
-mod comment_reply;
 mod comment_playlist;
+mod comment_reply;
 mod comment_video;
 
 // ---- 推荐相关 ----
@@ -156,6 +156,7 @@ mod login_status;
 mod logout;
 mod register_anonimous;
 mod register_cellphone;
+mod register_xeapikey;
 
 // ---- 验证相关 ----
 mod captcha_sent;
@@ -402,9 +403,9 @@ mod voice_delete;
 mod voice_detail;
 mod voice_lyric;
 mod voicelist_detail;
-mod voicelist_my_created;
 mod voicelist_list;
 mod voicelist_list_search;
+mod voicelist_my_created;
 mod voicelist_search;
 mod voicelist_trans;
 
@@ -552,7 +553,11 @@ impl Query {
     /// 构造 RequestOption
     pub(crate) fn to_option(&self, crypto: CryptoType) -> RequestOption {
         RequestOption {
-            crypto,
+            crypto: self
+                .get("crypto")
+                .filter(|value| !value.is_empty())
+                .map(CryptoType::from)
+                .unwrap_or(crypto),
             cookie: self.cookie.clone(),
             ua: self.ua.clone(),
             proxy: self.proxy.clone(),
@@ -561,6 +566,7 @@ impl Query {
             e_r: self.e_r,
             domain: self.domain.clone(),
             check_token: false,
+            check_token_version: self.get("checkToken").map(str::to_owned),
         }
     }
 }

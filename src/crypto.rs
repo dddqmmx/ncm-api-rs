@@ -10,6 +10,11 @@ use rand::Rng;
 use rsa::traits::PublicKeyParts;
 use rsa::{BigUint, RsaPublicKey};
 use std::collections::HashMap;
+mod xeapi;
+pub use xeapi::{
+    xeapi, xeapi_decrypt_public_key, xeapi_req_decrypt, xeapi_res_decrypt, xeapi_sign,
+    xeapi_verify_signature, XeapiPublicKey,
+};
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 type Aes128EcbEnc = ecb::Encryptor<aes::Aes128>;

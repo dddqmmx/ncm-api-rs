@@ -14,11 +14,15 @@ impl ApiClient {
             "immerseType": "c51",
             "level": query.get_or("level", "standard")
         });
-        self.request(
-            "/api/song/enhance/download/url/v1",
-            data,
-            query.to_option(CryptoType::default()),
-        )
-        .await
+        let mut options = query.to_option(CryptoType::default());
+        if query.get_or("level", "standard") == "vivid" {
+            let mut cookie =
+                crate::util::cookie::cookie_to_json(options.cookie.as_deref().unwrap_or(""));
+            cookie.insert("os".into(), "android".into());
+            cookie.insert("appver".into(), "9.5.61".into());
+            options.cookie = Some(crate::util::cookie::cookie_obj_to_string(&cookie));
+        }
+        self.request("/api/song/enhance/download/url/v1", data, options)
+            .await
     }
 }

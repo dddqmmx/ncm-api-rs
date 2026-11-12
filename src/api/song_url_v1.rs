@@ -17,13 +17,18 @@ impl ApiClient {
             "encodeType": "flac"
         });
         if level == "sky" {
-            data["immerseType"] = json!("c51");
+            data["immerseType"] = json!(query.get_or("immerseType", "c51"));
         }
-        self.request(
-            "/api/song/enhance/player/url/v1",
-            data,
-            query.to_option(CryptoType::default()),
-        )
-        .await
+        let mut options = query.to_option(CryptoType::Xeapi);
+        if level == "vivid" {
+            data["encodeType"] = json!("mp3");
+            let mut cookie =
+                crate::util::cookie::cookie_to_json(options.cookie.as_deref().unwrap_or(""));
+            cookie.insert("os".into(), "android".into());
+            cookie.insert("appver".into(), "9.5.61".into());
+            options.cookie = Some(crate::util::cookie::cookie_obj_to_string(&cookie));
+        }
+        self.request("/api/song/enhance/player/url/v1", data, options)
+            .await
     }
 }
